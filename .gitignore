@@ -1,0 +1,4 @@
+.venv/
+data/
+SwappedTransformer.egg-info/
+results/

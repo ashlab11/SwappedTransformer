@@ -16,9 +16,9 @@ class DefaultEncoderLayerRoPE(nn.Module):
         
         # Rotary Positional Embeddings
         self.RoPE = RotaryPositionalEmbeddings(
-            dim=self.embed_dim, 
+            dim=self.head_dim, 
             base=10000, 
-            max_seq_len=512
+            max_seq_len=256
         )
         
         self.q_proj = nn.Linear(self.embed_dim, self.embed_dim)
@@ -50,15 +50,10 @@ class DefaultEncoderLayerRoPE(nn.Module):
         v = self.v_proj(x).view(B, L, self.n_heads, self.head_dim).transpose(1, 2)
         q = self.RoPE(q)
         k = self.RoPE(k)
-        attn_scores = torch.matmul(q, k.transpose(-2, -1)) / (self.head_dim ** 0.5) # [B, n_heads, L, L]
-        
-        if attention_mask is not None:
-            mask = attention_mask.unsqueeze(1).unsqueeze(2) # [B, 1, 1, L]
-            attn_scores = attn_scores.masked_fill(mask, float('-inf'))
-        
-        attn_scores = torch.softmax(attn_scores, dim=-1)  # [B, n_heads, L, L]
-        attn_scores = nn.functional.dropout(attn_scores, p=self.dropout, training=self.training)
-        attn_output = torch.matmul(attn_scores, v) # [B, n_heads, L, head_dim]
+        attn_output = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attention_mask,
+            dropout_p=self.dropout if self.training else 0.0)
         attn_output = attn_output.transpose(1, 2).contiguous().view(B, L, D)  # [B, L, embed_dim]
         
         x = self.out_proj(attn_output)
@@ -109,7 +104,8 @@ class SwappedTransformerLayerRoPE(nn.Module):
         attention_mask: [batch_size, seq_len] which tokens to attend to
         """
         B, L, D = input_ids.size()
-        x = self.ffn(input_ids) # [B, L, ff_dim]
+        x = self.pre_ffn_norm(input_ids)  # [B, L, embed_dim]
+        x = self.ffn(x) # [B, L, ff_dim]
         
         x = self.pre_attn_norm(input_ids) #Unsure if this is necessary? I'll leave it for now.
         
@@ -118,15 +114,10 @@ class SwappedTransformerLayerRoPE(nn.Module):
         v = self.v_proj(x).view(B, L, self.n_heads, self.head_dim).transpose(1, 2)
         q = self.RoPE(q)
         k = self.RoPE(k)
-        attn_scores = torch.matmul(q, k.transpose(-2, -1)) / (self.head_dim ** 0.5) # [B, n_heads, L, L]
-        
-        if attention_mask is not None:
-            mask = attention_mask.unsqueeze(1).unsqueeze(2) # [B, 1, 1, L]
-            attn_scores = attn_scores.masked_fill(mask, float('-inf'))
-        
-        attn_scores = torch.softmax(attn_scores, dim=-1)  # [B, n_heads, L, L]
-        attn_scores = nn.functional.dropout(attn_scores, p=self.dropout, training=self.training)
-        attn_output = torch.matmul(attn_scores, v) # [B, n_heads, L, head_dim]
+        attn_output = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=attention_mask,
+            dropout_p=self.dropout if self.training else 0.0)
         attn_output = attn_output.transpose(1, 2).contiguous().view(B, L, D)  # [B, L, embed_dim]
         
         x = self.out_proj(attn_output)

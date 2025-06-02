@@ -2,3 +2,4 @@
 data/
 SwappedTransformer.egg-info/
 results/
+src/__pycache__

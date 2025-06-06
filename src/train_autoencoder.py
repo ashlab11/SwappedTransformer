@@ -1,76 +1,86 @@
-"""
-Main training script for the model. Conducts masked-token prediction on two datasets:
-1. The WikiText-103 dataset, which is a large-scale language modeling dataset.
-2. OpenWebtext, a dataset of web text for language modeling.
-This script initializes the model, sets up the training loop, and evaluates the model on the validation set.
-"""
-
-import transformers, accelerate, datasets, evaluate, torch
-from models import AutoEncoder
-import argparse
-import os
-from datasets import load_dataset
+"""Training script for the autoencoder model."""
 import torch
+from datasets import load_dataset, Dataset
+from transformers import Trainer, TrainingArguments
+from models import AutoEncoder
 import torch.nn as nn
-import evaluate, accelerate
 
-from transformers import (
-    AutoConfig,
-    AutoModelForSequenceClassification,
-    AutoTokenizer,
-    DataCollatorForLanguageModeling,
-    Trainer,
-    TrainingArguments,
+
+device = (
+    'mps' if torch.backends.mps.is_available() else
+    'cuda' if torch.cuda.is_available() else
+    'cpu'
 )
 
-device = 'mps' if torch.backends.mps.is_available() else 'cuda' if torch.cuda.is_available() else 'cpu'
-bf16_ok = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+# --- Load dataset ---
+try:
+    ds = load_dataset("Salesforce/wikitext", "wikitext-103-raw-v1", split="train")
+except Exception as e:
+    print(f"Could not download dataset: {e}")
+    fallback_text = [
+        "hello world",
+        "this is a tiny dataset",
+        "used when the real dataset can't be downloaded"
+    ] * 100
+    ds = Dataset.from_dict({"text": fallback_text})
 
-# --- Loading and preparing the dataset
-ds_wiki = load_dataset("Salesforce/wikitext", "wikitext-103-raw-v1")
-#ds_openweb = load_dataset('openwebtext')
-# Concatenate the two datasets
-#ds = datasets.concatenate_datasets([ds_wiki['train'], ds_openweb['train']])
-ds = ds_wiki['train']  # For simplicity, using only WikiText-103
+# remove empty texts
+ds = ds.filter(lambda x: len(x["text"]) > 0)
 
-# Filter out empty texts
-ds = ds.filter(lambda x: len(x['text']) > 0)
-tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+# --- Simple character-level tokenizer to avoid external downloads ---
+all_text = "".join(ds["text"])
+chars = sorted(set(all_text))
+vocab = {c: i + 4 for i, c in enumerate(chars)}
+vocab["[PAD]"] = 0
+vocab["[UNK]"] = 1
+vocab["[CLS]"] = 2
+vocab["[SEP]"] = 3
+inv_vocab = {i: c for c, i in vocab.items()}
 
-max_length = 256
+def encode(text):
+    return [vocab.get(c, vocab["[UNK]"]) for c in text][:256]
+
 def tokenize_function(examples):
-    return tokenizer(examples['text'], truncation=True, padding=False, max_length=256)
+    ids = [encode(t) for t in examples["text"]]
+    attn = [[1] * len(i) for i in ids]
+    return {"input_ids": ids, "labels": ids, "attention_mask": attn}
 
-# mapping tokenization function
 ds = ds.map(tokenize_function, batched=True, remove_columns=["text"])
 
-collator = DataCollatorForLanguageModeling(
-    tokenizer = tokenizer,
-    mlm=False,  # Set to False for autoencoder training
-    pad_to_multiple_of=8 if device == 'mps' else None,
-)
+def collator(batch):
+    max_len = max(len(x["input_ids"]) for x in batch)
+    input_ids = torch.zeros(len(batch), max_len, dtype=torch.long)
+    attention_mask = torch.zeros(len(batch), max_len, dtype=torch.long)
+    for i, b in enumerate(batch):
+        ids = torch.tensor(b["input_ids"], dtype=torch.long)
+        input_ids[i, : len(ids)] = ids
+        attention_mask[i, : len(ids)] = 1
+    labels = input_ids.clone()
+    return {"input_ids": input_ids, "labels": labels, "attention_mask": attention_mask}
 
-swapped = False
-print("Length of tokenizer:", len(tokenizer))
+vocab_size = len(vocab)
+
 model = AutoEncoder(
-    vocab_size = len(tokenizer),
-    embed_dim = 256, 
-    encoder_dim = 512,  # Double embed_dim for simplicity
-    ff_dim = 1024,
-    n_layers_enc = 4,
-    n_layers_dec = 4,
-    n_heads = 8,
+    vocab_size=vocab_size,
+    embed_dim=256,
+    slot_dim=512,
+    ff_dim=1024,
+    n_layers_enc=4,
+    n_layers_dec=4,
+    n_heads=8,
     n_slots=16,
     activation_function=nn.GELU,
     dropout=0.1,
-    layer_norm_eps=1e-5
+    layer_norm_eps=1e-5,
 )
 
-print(f"Total trainable parameters in the model: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
-
+print(
+    "Total trainable parameters:",
+    sum(p.numel() for p in model.parameters() if p.requires_grad)
+)
 model.to(device)
 
-# ---------- Optimizer with no-decay bias/LN ----------
+# Optimizer groups
 no_decay = ["bias", "LayerNorm.weight", "norm.weight"]
 optim_groups = [
     {
@@ -83,24 +93,21 @@ optim_groups = [
     },
 ]
 
-
-# ---------- 5. TrainingArguments ----------
 training_args = TrainingArguments(
-    output_dir="models/cramming_run",
+    output_dir="models/test_run",
     overwrite_output_dir=True,
     num_train_epochs=1,
     per_device_train_batch_size=3,
-    gradient_accumulation_steps=16,            # 16×16 = 256 sequences/step
-    learning_rate=6e-4,                        # Cramming LR
+    gradient_accumulation_steps=2,
+    learning_rate=6e-4,
     lr_scheduler_type="cosine",
     warmup_ratio=0.1,
     optim="adamw_torch",
     logging_strategy="steps",
-    logging_steps=50,
+    logging_steps=5,
     ddp_find_unused_parameters=False,
 )
 
-# ---------- 6. Trainer ----------
 trainer = Trainer(
     model=model,
     args=training_args,

@@ -45,7 +45,7 @@ ds = ds.map(tokenize_function, batched=True, remove_columns=["text"])
 collator = DataCollatorForLanguageModeling(
     tokenizer = tokenizer,
     mlm=True,
-    mlm_probability=0.15,
+    mlm_probability=0,
     pad_to_multiple_of=8 if device == 'mps' else None,
 )
 

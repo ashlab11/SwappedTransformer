@@ -6,7 +6,7 @@ This script initializes the model, sets up the training loop, and evaluates the 
 """
 
 import transformers, accelerate, datasets, evaluate, torch
-from src.models import Encoder
+from models import AutoEncoder
 import argparse
 import os
 from datasets import load_dataset
@@ -28,9 +28,11 @@ bf16_ok = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
 
 # --- Loading and preparing the dataset
 ds_wiki = load_dataset("Salesforce/wikitext", "wikitext-103-raw-v1")
-ds_openweb = load_dataset('openwebtext')
+#ds_openweb = load_dataset('openwebtext')
 # Concatenate the two datasets
-ds = datasets.concatenate_datasets([ds_wiki['train'], ds_openweb['train']])
+#ds = datasets.concatenate_datasets([ds_wiki['train'], ds_openweb['train']])
+ds = ds_wiki['train']  # For simplicity, using only WikiText-103
+
 # Filter out empty texts
 ds = ds.filter(lambda x: len(x['text']) > 0)
 tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
@@ -44,23 +46,26 @@ ds = ds.map(tokenize_function, batched=True, remove_columns=["text"])
 
 collator = DataCollatorForLanguageModeling(
     tokenizer = tokenizer,
-    mlm=True,
-    mlm_probability=0.15,
+    mlm=False,  # Set to False for autoencoder training
     pad_to_multiple_of=8 if device == 'mps' else None,
 )
 
 swapped = False
-model = Encoder(
+print("Length of tokenizer:", len(tokenizer))
+model = AutoEncoder(
     vocab_size = len(tokenizer),
     embed_dim = 256, 
+    encoder_dim = 512,  # Double embed_dim for simplicity
     ff_dim = 1024,
-    n_layers = 4,
-    n_heads = 16,
+    n_layers_enc = 4,
+    n_layers_dec = 4,
+    n_heads = 8,
+    n_slots=16,
     activation_function=nn.GELU,
-    swapped=swapped,  # Set to True if you want to use the swapped architecture
     dropout=0.1,
     layer_norm_eps=1e-5
 )
+
 print(f"Total trainable parameters in the model: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 
 model.to(device)
@@ -84,7 +89,7 @@ training_args = TrainingArguments(
     output_dir="models/cramming_run",
     overwrite_output_dir=True,
     num_train_epochs=1,
-    per_device_train_batch_size=16,
+    per_device_train_batch_size=3,
     gradient_accumulation_steps=16,            # 16×16 = 256 sequences/step
     learning_rate=6e-4,                        # Cramming LR
     lr_scheduler_type="cosine",
@@ -92,10 +97,6 @@ training_args = TrainingArguments(
     optim="adamw_torch",
     logging_strategy="steps",
     logging_steps=50,
-    save_strategy="epoch",
-    eval_strategy="epoch",
-    load_best_model_at_end=True,
-    metric_for_best_model="loss",
     ddp_find_unused_parameters=False,
 )
 
@@ -103,8 +104,7 @@ training_args = TrainingArguments(
 trainer = Trainer(
     model=model,
     args=training_args,
-    train_dataset=ds['train'],
-    eval_dataset=ds['validation'],       
+    train_dataset=ds,
     data_collator=collator,
     optimizers=(torch.optim.AdamW(optim_groups, lr=6e-4), None),
 )

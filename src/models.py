@@ -71,12 +71,12 @@ class Decoder(nn.Module):
         
         self.output_layer = nn.Linear(embed_dim, vocab_size)
         
-    def forward(self, input_ids, encoder_outputs, attention_mask=None):
+    def forward(self, input_ids, encoder_inputs, attention_mask=None):
         x = self.embed(input_ids)
         #Alternating between self-attention and cross-attention
         for i in range(len(self.self_attention_layers)):
             x = self.self_attention_layers[i](x, attention_mask=attention_mask)
-            x = self.cross_attention_layers[i](x, encoder_inputs=encoder_outputs, attention_mask=attention_mask)
+            x = self.cross_attention_layers[i](x, encoder_inputs=encoder_inputs, attention_mask=attention_mask)
         x = self.output_layer(x)  # Final linear layer to map back to vocabulary size
         return x
         
@@ -109,6 +109,7 @@ class AutoEncoder(nn.Module):
         
         #We swap the encoder and decoder dimensions -- initial encoder works in vocab dim, 
         #But we want the "between space" to be in the embedding dim
+        self.slots = nn.Parameter(torch.randn(1, n_slots, encoder_dim)) # Slots for cross-attention
         self.cross_attn = Attention(
             embed_dim=encoder_dim, 
             encoder_dim=embed_dim, 
@@ -133,11 +134,12 @@ class AutoEncoder(nn.Module):
         # Encoder part
         encoder_outputs = self.encoder(input_ids, attention_mask=attention_mask)
         
+        slots = self.slots.expand(input_ids.size(0), -1, -1)
         # Cross-attention part
-        cross_attn_outputs = self.cross_attn(encoder_outputs, attention_mask=attention_mask)
+        cross_attn_outputs = self.cross_attn(slots, encoder_inputs=encoder_outputs, attention_mask=attention_mask)
         
         # Decoder part
-        logits = self.decoder(input_ids, encoder_outputs=cross_attn_outputs, attention_mask=attention_mask)
+        logits = self.decoder(input_ids, encoder_inputs=cross_attn_outputs, attention_mask=attention_mask)
         
         loss = None
         if labels is not None:

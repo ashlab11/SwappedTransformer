@@ -6,6 +6,15 @@ class DefaultTransformerLayerRoPE(nn.Module):
     def __init__(self, embed_dim, ff_dim, n_heads, activation_function=nn.ReLU, encoder_dim = None,
                  dropout=0.1, layer_norm_eps=1e-5):
         super(DefaultTransformerLayerRoPE, self).__init__()
+        self.activation_function = activation_function
+        self.embed_dim = embed_dim
+        self.n_heads = n_heads
+        self.head_dim = embed_dim // n_heads
+        assert embed_dim % n_heads == 0, "embed_dim must be divisible by n_heads"
+        self.encoder_dim = encoder_dim if encoder_dim is not None else embed_dim
+        self.dropout = dropout
+        self.layer_norm_eps = layer_norm_eps
+        
         self.attention = Attention(
             embed_dim=embed_dim,
             n_heads=n_heads,
@@ -36,7 +45,6 @@ class DefaultTransformerLayerRoPE(nn.Module):
         res1 = x  # Save the residual connection for later
         x = self.pre_attn_norm(x)
         x = self.attention(x, attention_mask=attention_mask, encoder_inputs=encoder_inputs, **kwargs)
-        x = self.out_proj(x)
         x = res1 + x
         res2 = x  # Save the residual connection for the FFN
         x = self.pre_ffn_norm(x)

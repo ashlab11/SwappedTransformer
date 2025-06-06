@@ -55,7 +55,7 @@ print("Length of tokenizer:", len(tokenizer))
 model = AutoEncoder(
     vocab_size = len(tokenizer),
     embed_dim = 256, 
-    encoder_dim = 512,  # Double embed_dim for simplicity
+    slot_dim = 512,  # Dimension of the slot representations
     ff_dim = 1024,
     n_layers_enc = 4,
     n_layers_dec = 4,

@@ -46,6 +46,9 @@ class AutoEncoder(nn.Module):
             dropout=dropout,
             layer_norm_eps=layer_norm_eps
         ) for _ in range(n_layers_dec)])
+
+        # Output projection to vocabulary
+        self.output_layer = nn.Linear(embed_dim, vocab_size)
         
     def forward(self, input_ids, labels = None, attention_mask=None):
         # Encoder part
@@ -55,7 +58,7 @@ class AutoEncoder(nn.Module):
             x = layer(x, attention_mask=attention_mask)
         # Encoder outputs, which we will use for slot attention
         
-        slots = self.slot_attn(x)
+        slots = self.slot_attn(x, attention_mask=attention_mask)
         
         # Decoder part
         x = embedding  # Start with the same input embeddings
@@ -64,7 +67,7 @@ class AutoEncoder(nn.Module):
             x = layer(x, encoder_inputs=slots, attention_mask=attention_mask)
         
         # Final linear layer to map back to vocabulary size
-        logits = nn.Linear(self.embed.embedding_dim, self.embed.num_embeddings)(x)
+        logits = self.output_layer(x)
         loss = None
         if labels is not None:
             loss = nn.functional.cross_entropy(
